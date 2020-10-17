@@ -1,0 +1,16 @@
+{
+    "rules":
+    [
+        {
+            "crypto_id" :"90",
+            "price" : 3470.98,
+            "rule" : "lt"
+        },
+        {
+            "crypto_id":"90",
+            "price":3900.0,
+            "rule":"gt"
+        }
+
+    ]
+}
