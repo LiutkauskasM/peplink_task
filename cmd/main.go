@@ -11,7 +11,7 @@ import (
 	"strconv"
 )
 const url ="https://api.coinlore.net/api/ticker/?id="
-const rulesFile = "../assets/rules.json"
+const rulesFile = "./assets/rules.json"
 type RuleStruct struct{
 	RulesArray []Rule `json:"rules"` 
 }
@@ -20,12 +20,7 @@ type Rule struct{
 	Crypto_id string `json:"crypto_id"`
 	Price string `json:"price"`
 	Rule string `json:"rule"`
-	IsUsed bool
 }
-
-//type ApiStruct struct{
-//	ApiArray []APIResult `json:"data"`
-//}
 
 type APIResult struct {
 	Id string `json:"id"`
@@ -55,7 +50,6 @@ type shortAPI struct {
 
 func doEvery(cText context.Context, d time.Duration, f func(string,RuleStruct, time.Time)RuleStruct)error {
 	ticker := time.Tick(1)
-	
 	var structure RuleStruct
 	for {
 		select{
@@ -64,8 +58,11 @@ func doEvery(cText context.Context, d time.Duration, f func(string,RuleStruct, t
 		case x := <- ticker:
 			ticker=time.Tick(d)
 			structure  :=f(rulesFile,structure,x)
-			fmt.Printf("Crypto_id:%v\n",structure.RulesArray[0].Crypto_id)
-			checkRules(structure)
+			for i:=0; i< len(structure.RulesArray);i++{
+				fmt.Printf("Crypto_id:%v\n",structure.RulesArray[i].Crypto_id)
+			}
+			structure = checkRules(structure)
+			reWritefile(structure)
 		}
 	
 		
@@ -89,32 +86,40 @@ func ReadFile(fileName string,rules RuleStruct, t time.Time)RuleStruct {
 	return rules
 }
 
-func checkRules(structure RuleStruct){
+func checkRules(structure RuleStruct)RuleStruct{
 
+	
 	array := structure.RulesArray
 	for i:=0; i<len(array);i++{
+		isUsed := false
 		result:= GetAPI(array[i].Crypto_id)
-		findAPIresult(result, array[i])
+		isUsed = findAPIresult(result, array[i],isUsed)
+		if isUsed {
+			array[0],array[i] = array[i], array[0]
+			structure.RulesArray = array[1:]
+
+		}
 	}
+	return structure
 }
 
-func findAPIresult(API shortAPI, rule Rule){
+func findAPIresult(API shortAPI, rule Rule, IsUsed bool)bool{
 	floatRulePrice, _ := strconv.ParseFloat(rule.Price,64)
 	floatApiPrice, _ := strconv.ParseFloat(API.Price,64)
-	fmt.Printf("Rule price is : %f and API price is: %f\n",floatRulePrice,floatApiPrice)
 	switch rule.Rule {
 		case "lt":
-			if (floatApiPrice < floatRulePrice && !rule.IsUsed) {
-				fmt.Printf("Cryptocurrency id:"+ API.Id + " "+ API.Name + " is lower than %d\n",rule.Price)
-				rule.IsUsed = true
+			if (floatApiPrice < floatRulePrice && !IsUsed) {
+				fmt.Printf("Cryptocurrency id:"+ API.Id + " "+ API.Name + " is lower than %v\n",rule.Price)
+				IsUsed = true
 			}
 		case "gt":
-			if (floatApiPrice > floatRulePrice && !rule.IsUsed) {
-				fmt.Printf("Cryptocurrency id:"+ API.Id + " "+ API.Name + " is grater than %d\n", rule.Price)
-				rule.IsUsed = true
+			if (floatApiPrice > floatRulePrice && !IsUsed) {
+				fmt.Printf("Cryptocurrency id:"+ API.Id + " "+ API.Name + " is grater than %v\n", rule.Price)
+				IsUsed = true
 			}
-
+	
 	}
+	return IsUsed
 
 }
 
@@ -130,22 +135,27 @@ func GetAPI(Id string) shortAPI {
 	responseData, _ := ioutil.ReadAll(response.Body)
 	
 	//responseData[:len(responseData)] =125
-	trimedResponseData :=responseData[0:]
-	trimedResponseData2:=trimedResponseData[:len(trimedResponseData)-1]
-	fmt.Printf("Last byte of read data: %b\n",trimedResponseData2[len(trimedResponseData2)-1])
+	//trimedResponseData :=responseData[0:]
+	//trimedResponseData2:=trimedResponseData[:len(trimedResponseData)-1]
 	
 
 	//var responseObject APIStruct
-	var responseObject APIResult
-	error:= json.Unmarshal(trimedResponseData2, &responseObject)
+	var responseObject []APIResult
+	error:= json.Unmarshal(responseData, &responseObject)
 	
 	if error != nil {
 		fmt.Printf("There was an error decoding the json. err = %s", error)
 	}
-	//oneAPI :=responseObject.ApiArray[0]
-	//result := createShortApi(oneAPI.Id,oneAPI.Name,oneAPI.Price_usd)
-	result := createShortApi(responseObject.Id,responseObject.Name,responseObject.Price_usd)
+//	oneAPI :=responseObject.ApiArray[0]
+//	result := createShortApi(oneAPI.Id,oneAPI.Name,oneAPI.Price_usd)
+	result := createShortApi(responseObject[0].Id,responseObject[0].Name,responseObject[0].Price_usd)
 	return result
+}
+
+func reWritefile(structure RuleStruct){
+	file, _ := json.MarshalIndent(structure, "", " ")
+	_ =ioutil.WriteFile("./assets/rules.json",file, 0644)
+
 }
 
 func createShortApi(id string,name string, price string) shortAPI {
@@ -156,7 +166,7 @@ func createShortApi(id string,name string, price string) shortAPI {
 
 func main () {
 	fmt.Println()
-	cText, cancel := context.WithTimeout(context.Background(), 1* time.Minute)
+	cText, cancel := context.WithTimeout(context.Background(), 5* time.Minute)
 	defer cancel()
 	doEvery(cText,30*time.Second,ReadFile)
 	
