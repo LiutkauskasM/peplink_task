@@ -9,6 +9,11 @@
    "crypto_id": "90",
    "price": "3470.98",
    "rule": "lt"
-  }
+  },
+  {
+    "crypto_id": "80",
+    "price": "3470.98",
+    "rule": "lt"
+   }
  ]
 }

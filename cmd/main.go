@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"sync"
 )
 
 const url = "https://api.coinlore.net/api/ticker/?id="
@@ -17,29 +18,35 @@ const url = "https://api.coinlore.net/api/ticker/?id="
 // paleisti is root direktorijos kaip `go run cmd/main.go`. Jei bandysi paleisti
 // kaip `cd cmd/ && go run main.go`, programa neras rules.json failo.
 const rulesFile = "./assets/rules.json"
+var wg sync.WaitGroup
 
+
+
+//naudojamas nskaityti visoms taiyklems is rules.json failo
 type RuleStruct struct {
 	RulesArray []Rule `json:"rules"`
 }
 
+
+// struktura rules.json objektams saugoti, kurioje yra visos taisykles savybes
 type Rule struct {
 	// reiketu panaudoti go fmt ir panasius irankius rasant koda. Editorius
 	// butu praneses kad go nelabai megsta "_" kintamuju pavadinimuose. Taip
 	// pat visokie akronimai kaip id, http, usd ir pan turetu but didziosiomis
 	// raidemis: ID, HTTP, USD. Sia informacija galiam rast aprasytus prie
 	// go kodo standartu.
-	Crypto_id string `json:"crypto_id"`
+	Crypto_ID string `json:"crypto_id"`
 	Price     string `json:"price"`
 	Rule      string `json:"rule"`
 }
-
+// struktura, skirta saugoti Is API gautiems rezultatams
 type APIResult struct {
 	Id               string `json:"id"`
 	Symbol           string `json:"symbol"`
 	Name             string `json:"name"`
 	NameId           string `json:"nameid"`
 	Rank             int    `json:"rank"`
-	Price_usd        string `json:"price_usd"`
+	Price_USD        string `json:"price_usd"`
 	Percent_change24 string `json:"percent_change_24h"`
 	Percent_change1  string `json:"percent_change_1h"`
 	Percent_change7d string `json:"percent_change_7d"`
@@ -47,89 +54,92 @@ type APIResult struct {
 	Volume24         string `json:"volume24"`
 	Volume24_native  string `json:"volume24_native"`
 	Csupply          string `json:"csupply"`
-	Price_btc        string `json:"price_btc"`
+	Price_BTC        string `json:"price_btc"`
 	Tsupply          string `json:"tsupply"`
 	Msupply          string `json:"msupply"`
 }
 
-type shortAPI struct {
-	Id    string
-	Name  string
-	Price string
-}
 
 // siuo atveju, butu geriau jei f funkcijos parasas butu  aprasytas kaip atskiras type.
 // context.Context, jei imanoma visada turetu vadintis ctx. Cia panasi taisykle, kaip for
 // cikluose pirma bandoma naudoti i,j raides ir pan., arba kaip error tipa laikantis kintamasis
 // turetu vadintis err.
-func doEvery(cText context.Context, d time.Duration, f func(string, RuleStruct, time.Time) RuleStruct) error {
+func doEvery(ctx context.Context, d time.Duration, f func(string, *RuleStruct, time.Time)) error {
 	// tickerius visada reikia sustabdyti. Ta galima padaryti su defer ticker.Stop()
 	// arba jei netinka su defer, suhandlinti pries return.
-	ticker := time.Tick(1)
+	ticker := time.NewTicker(d)
+	defer ticker.Stop()
+	//defer time.Stop(&ticker)
 	var structure RuleStruct
 	for {
 		select {
-		case <-cText.Done():
-			return cText.Err()
-		case x := <-ticker:
+		case <-ctx.Done():
+			return ctx.Err()
+		case x := <-ticker.C:
 			// cia kazkas labai negerai. Reiketu tikeri paleist iskarto su d
 			// ir vidury "tickinimo" pernaujo tickerio nustatyti nereiketu.
-			ticker = time.Tick(d)
+		
 			// cia kazkas negerai. perdaug yra pernaudojamas structure kintamasis.
 			// galima panaudoti pointerius, tam kad nereiketu taip pernaudot structure
 			// kintamojo. Tuomet funkijos galetu structure vidurius pakoreguot iskart.
-			structure := f(rulesFile, structure, x)
-			for i := 0; i < len(structure.RulesArray); i++ {
-				fmt.Printf("Crypto_id:%v\n", structure.RulesArray[i].Crypto_id)
+			f(rulesFile, &structure, x)
+			for i, rule := range structure.RulesArray {
+				fmt.Printf("#%d Crypto_id:%v\n",i+1, rule.Crypto_ID)
 			}
-			structure = checkRules(structure)
+			checkRules(&structure)
 			reWritefile(structure)
 		}
 
 	}
 }
 
-func ReadFile(fileName string, rules RuleStruct, t time.Time) RuleStruct {
-	file, err := os.Open(fileName)
+func readFile(fileName string, rules *RuleStruct, t time.Time) {
+	//file, err := os.Open(fileName)
+	file, err := ioutil.ReadFile(fileName)
 	if err != nil {
 		fmt.Println(err)
+		os.Exit(1)
 	}
 
-	defer file.Close()
 	fmt.Printf("File successfully opened at %v\n", t)
 
 	// cia kazkas negerai. Keistai atrodo kad atidarai faila su os.Open, bet
 	// nuskaitymui naudoji ioutil biblioteka. Jei jau naudoji ioutil, tuomet 
 	// visa koda auksciau galetum ismesti jei panaudotum ioutil.ReadFile(path)
-	byteValue, _ := ioutil.ReadAll(file)
+
+	//byteValue, _ := ioutil.ReadAll(file)
 	
-	json.Unmarshal(byteValue, &rules)
-	return rules
+	err =	json.Unmarshal(file, &rules)
+	if err != nil {
+		fmt.Printf("There was an error decoding the json. err = %s", err)
+		os.Exit(1)
+	}
+	
 }
 
-func checkRules(structure RuleStruct) RuleStruct {
+func checkRules(structure *RuleStruct){
 
 	// sitas kintamasis nereikalingas jei naudotum
 	// for i, v := range structure.RulesArray { .. }
-	array := structure.RulesArray
-	for i := 0; i < len(array); i++ {
-		isUsed := false
-		result := GetAPI(array[i].Crypto_id)
-		isUsed = findAPIresult(result, array[i], isUsed)
+	for i, rule := range structure.RulesArray {
+		result := getAPI(rule.Crypto_ID)
+		isUsed := findAPIresult(result, rule)
 		if isUsed {
 			// sitas neveiks taip kaip tu tikiesi. e.g.
 			// https://play.golang.org/p/Y7jyzTS4tJZ
-			array[0], array[i] = array[i], array[0]
-			structure.RulesArray = array[1:]
+			//M: bet kai masyvas vis pildomas, turėtų veikti, nes failas vis nuskaitomas
+			// ir gali būti skirtingos taisyklės ( labiau gal toks variantas būtų : https://play.golang.org/p/PElaOgE0YQu)
+			structure.RulesArray[0], structure.RulesArray[i] = structure.RulesArray[i], structure.RulesArray[0]
+			structure.RulesArray = structure.RulesArray[1:]
 
 		}
 	}
-	return structure
 }
 
-func findAPIresult(API shortAPI, rule Rule, IsUsed bool) bool {
+func findAPIresult(API APIResult, rule Rule) bool {
 	floatRulePrice, _ := strconv.ParseFloat(rule.Price, 64)
-	floatApiPrice, _ := strconv.ParseFloat(API.Price, 64)
+	floatApiPrice, _ := strconv.ParseFloat(API.Price_USD, 64)
+	IsUsed:= false
 	switch rule.Rule {
 	case "lt":
 		if floatApiPrice < floatRulePrice && !IsUsed {
@@ -150,7 +160,7 @@ func findAPIresult(API shortAPI, rule Rule, IsUsed bool) bool {
 
 }
 
-func GetAPI(Id string) shortAPI {
+func getAPI(Id string) APIResult {
 
 	URL := fmt.Sprintf(url + Id)
 	response, err := http.Get(URL)
@@ -160,6 +170,7 @@ func GetAPI(Id string) shortAPI {
 	}
 
 	// truksta defer response.Body.Close()
+	defer response.Body.Close()
 	responseData, _ := ioutil.ReadAll(response.Body)
 
 	//responseData[:len(responseData)] =125
@@ -168,18 +179,18 @@ func GetAPI(Id string) shortAPI {
 
 	//var responseObject APIStruct
 	var responseObject []APIResult
-	error := json.Unmarshal(responseData, &responseObject)
+	err = json.Unmarshal(responseData, &responseObject)
 
-	if error != nil {
-		fmt.Printf("There was an error decoding the json. err = %s", error)
+	if err != nil {
+		fmt.Printf("There was an error decoding the json. err = %s", err)
+		os.Exit(1)
 	}
 	//	oneAPI :=responseObject.ApiArray[0]
 	//	result := createShortApi(oneAPI.Id,oneAPI.Name,oneAPI.Price_usd)
 	
 	// jei ivyko klaida, responseObject bus tuscias array, todel tokio elemento
 	// kaip [0] nepavyks pasiekti. Potenciali vieta gauti panic.
-	result := createShortApi(responseObject[0].Id, responseObject[0].Name, responseObject[0].Price_usd)
-	return result
+	return responseObject[0]
 }
 
 func reWritefile(structure RuleStruct) {
@@ -187,24 +198,28 @@ func reWritefile(structure RuleStruct) {
 
 	// matai, failo irasymui panaudoji WriteFile, be jokiu os.Open(..),
 	// kodel nuskaitymui nenaudoji irgi tiesiog ReadFile? :D
-	_ = ioutil.WriteFile("./assets/rules.json", file, 0644)
+	_ = ioutil.WriteFile(rulesFile, file, 0644)
 
 }
 
-func createShortApi(id string, name string, price string) shortAPI {
-	API := shortAPI{Id: id, Name: name, Price: price}
-	return API
-}
+
 
 func main() {
 	fmt.Println()
 	// kodel cia naudoji WithTimeout? Tavo programa nedirbs ilgiau kaip 5 min.
 	// ar tikrai ta nori pasiekti cia?
-	cText, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+
+	//M: 
+	ctx := context.Background()
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	wg.Add(1)
 
 	// tokios funkcijos kurios viduje turi tickerius, turetu but paleidziamos
 	// atskiroje rutinoje kaip go doEvery(..).
-	doEvery(cText, 30*time.Second, ReadFile)
+
+	//M: dar su lygiagrečiu programavimu truputį sunku, nes dabar infine laiką programa bėgs
+	go doEvery(ctx, 30*time.Second, readFile)
+	wg.Wait()
 
 }
